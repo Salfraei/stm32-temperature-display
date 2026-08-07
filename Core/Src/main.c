@@ -5,45 +5,25 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#define MQTT_BROKER \
-    "tcp://broker.emqx.io:1883"
-
-#define MQTT_CLIENT_ID \
-    "stm32-pavlo-a7670e-room1"
-
-#define MQTT_TOPIC \
-    "pavlo/esp32/room1"
+#define MQTT_BROKER "tcp://broker.emqx.io:1883"
+#define MQTT_CLIENT_ID "stm32-pavlo-a7670e-room1"
+#define MQTT_TOPIC "pavlo/esp32/room1"
 
 #define MODEM_RESPONSE_SIZE 1024U
-#define MQTT_RECEIVE_SIZE   2048U
+#define MQTT_RECEIVE_SIZE 2048U
 
-/*
- * Остання температура, отримана через MQTT.
- */
 static volatile float g_received_temperature = 0.0f;
-
-/*
- * 0 — температура ще не отримана;
- * 1 — температура коректно отримана та збережена.
- */
 static volatile uint8_t g_temperature_valid = 0U;
 
 static void SystemClock_Config(void);
 
 static void LED_Init(void);
 static void Display_GPIO_Init(void);
-
 static void LED_On(void);
 static void LED_Off(void);
-
-static void LED_Blink(
-    uint8_t count,
-    uint32_t delay_ms
-);
-
+static void LED_Blink(uint8_t count, uint32_t delay_ms);
 static void Fatal_Error(uint8_t code);
 
 static void UART_Clear(void);
@@ -63,54 +43,39 @@ static uint8_t Modem_SendCommand(
 static uint8_t Modem_InitNetwork(void);
 static uint8_t MQTT_Connect(void);
 static uint8_t MQTT_Subscribe(void);
-
 static void MQTT_Process(void);
+
+static uint8_t IsDigit(char character);
+
+static uint8_t ParseFloatManual(
+    const char *start,
+    const char *end,
+    float *value
+);
 
 static uint8_t MQTT_ExtractTemperature(
     const char *buffer,
     float *temperature
 );
 
+
+/* Main */
+
 int main(void)
 {
     HAL_Init();
     SystemClock_Config();
 
-    /*
-     * GPIO для вбудованого LED PC13.
-     */
     LED_Init();
-
-    /*
-     * GPIO дисплея:
-     *
-     * PB0  -> DC
-     * PB1  -> SCE / CS
-     * PB10 -> RST
-     */
     Display_GPIO_Init();
 
-    /*
-     * SPI1:
-     *
-     * PA5 -> CLK
-     * PA7 -> DIN / MOSI
-     */
     MX_SPI1_Init();
-
-    /*
-     * USART1:
-     *
-     * PA9  -> TX модуля через RX A7670E
-     * PA10 -> RX модуля через TX A7670E
-     */
     MX_USART1_UART_Init();
 
     LED_Off();
 
-    /*
-     * Запуск Nokia 5110.
-     */
+    /* Display initialization */
+
     Nokia5110_Init();
     Nokia5110_Clear();
 
@@ -120,14 +85,10 @@ int main(void)
     Nokia5110_SetCursor(6U, 3U);
     Nokia5110_WriteString("LTE MQTT");
 
-    /*
-     * Чекаємо повного запуску A7670E.
-     */
     HAL_Delay(6000U);
 
-    /*
-     * Перевірка UART із модемом.
-     */
+    /* Modem check */
+
     if (!Modem_SendCommand(
             "AT\r\n",
             "OK",
@@ -141,16 +102,9 @@ int main(void)
         Fatal_Error(1U);
     }
 
-    /*
-     * Один повільний спалах:
-     * модем відповів на AT.
-     */
     LED_Blink(1U, 500U);
     HAL_Delay(1000U);
 
-    /*
-     * Вимикаємо echo AT-команд.
-     */
     if (!Modem_SendCommand(
             "ATE0\r\n",
             "OK",
@@ -164,14 +118,12 @@ int main(void)
         Fatal_Error(2U);
     }
 
+    /* LTE connection */
+
     Nokia5110_Clear();
     Nokia5110_SetCursor(3U, 2U);
     Nokia5110_WriteString("LTE connect");
 
-    /*
-     * Налаштування APN Kyivstar
-     * та відкриття мобільного інтернету.
-     */
     if (!Modem_InitNetwork())
     {
         Nokia5110_Clear();
@@ -181,20 +133,15 @@ int main(void)
         Fatal_Error(3U);
     }
 
-    /*
-     * Три повільні спалахи:
-     * мобільний інтернет відкритий.
-     */
     LED_Blink(3U, 500U);
     HAL_Delay(1000U);
+
+    /* MQTT connection */
 
     Nokia5110_Clear();
     Nokia5110_SetCursor(3U, 2U);
     Nokia5110_WriteString("MQTT connect");
 
-    /*
-     * Підключення до broker.emqx.io.
-     */
     if (!MQTT_Connect())
     {
         Nokia5110_Clear();
@@ -204,20 +151,15 @@ int main(void)
         Fatal_Error(4U);
     }
 
-    /*
-     * Чотири повільні спалахи:
-     * MQTT broker підключений.
-     */
     LED_Blink(4U, 500U);
     HAL_Delay(1000U);
+
+    /* MQTT subscription */
 
     Nokia5110_Clear();
     Nokia5110_SetCursor(3U, 2U);
     Nokia5110_WriteString("Subscribe");
 
-    /*
-     * Підписка на topic ESP32.
-     */
     if (!MQTT_Subscribe())
     {
         Nokia5110_Clear();
@@ -227,35 +169,29 @@ int main(void)
         Fatal_Error(5U);
     }
 
-    /*
-     * П'ять повільних спалахів:
-     * підписка успішна.
-     */
     LED_Blink(5U, 500U);
+    HAL_Delay(500U);
 
     Nokia5110_Clear();
     Nokia5110_SetCursor(3U, 1U);
     Nokia5110_WriteString("Waiting");
 
-    Nokia5110_SetCursor(12U, 3U);
+    Nokia5110_SetCursor(8U, 3U);
     Nokia5110_WriteString("temperature");
 
-    /*
-     * Постійно приймаємо MQTT-повідомлення.
-     */
     while (1)
     {
         MQTT_Process();
     }
 }
 
+
+/* LTE network */
+
 static uint8_t Modem_InitNetwork(void)
 {
     char response[MODEM_RESPONSE_SIZE];
 
-    /*
-     * Перевірка SIM-карти.
-     */
     UART_Clear();
 
     if (HAL_UART_Transmit(
@@ -281,9 +217,6 @@ static uint8_t Modem_InitNetwork(void)
         return 0U;
     }
 
-    /*
-     * APN Kyivstar.
-     */
     if (!Modem_SendCommand(
             "AT+CGDCONT=1,\"IP\",\"internet\"\r\n",
             "OK",
@@ -293,13 +226,6 @@ static uint8_t Modem_InitNetwork(void)
         return 0U;
     }
 
-    /*
-     * Відкриваємо мережевий сервіс.
-     *
-     * Якщо сервіс уже відкритий, команда може
-     * повернути ERROR, тому нижче окремо
-     * перевіряємо AT+NETOPEN?.
-     */
     Modem_SendCommand(
         "AT+NETOPEN\r\n",
         NULL,
@@ -337,15 +263,14 @@ static uint8_t Modem_InitNetwork(void)
     return 1U;
 }
 
+
+/* MQTT connection */
+
 static uint8_t MQTT_Connect(void)
 {
     char command[192];
     char response[MODEM_RESPONSE_SIZE];
 
-    /*
-     * Закриваємо старий MQTT-сеанс,
-     * якщо він залишився у модемі.
-     */
     Modem_SendCommand(
         "AT+CMQTTDISC=0,60\r\n",
         NULL,
@@ -366,9 +291,6 @@ static uint8_t MQTT_Connect(void)
 
     HAL_Delay(1000U);
 
-    /*
-     * Запуск MQTT-служби A7670E.
-     */
     UART_Clear();
 
     if (HAL_UART_Transmit(
@@ -395,9 +317,6 @@ static uint8_t MQTT_Connect(void)
         return 0U;
     }
 
-    /*
-     * Реєстрація MQTT-клієнта.
-     */
     snprintf(
         command,
         sizeof(command),
@@ -414,12 +333,6 @@ static uint8_t MQTT_Connect(void)
         return 0U;
     }
 
-    /*
-     * Підключення до broker:
-     *
-     * 60 — keep alive;
-     * 1  — clean session.
-     */
     snprintf(
         command,
         sizeof(command),
@@ -455,14 +368,14 @@ static uint8_t MQTT_Connect(void)
     return 1U;
 }
 
+
+/* MQTT subscription */
+
 static uint8_t MQTT_Subscribe(void)
 {
     char command[96];
     char response[MODEM_RESPONSE_SIZE];
 
-    /*
-     * Формуємо команду з реальною довжиною topic.
-     */
     snprintf(
         command,
         sizeof(command),
@@ -490,17 +403,11 @@ static uint8_t MQTT_Subscribe(void)
         5000U
     );
 
-    /*
-     * Очікуємо запрошення >.
-     */
     if (strchr(response, '>') == NULL)
     {
         return 0U;
     }
 
-    /*
-     * Надсилаємо topic без \r\n.
-     */
     if (HAL_UART_Transmit(
             &huart1,
             (uint8_t *)MQTT_TOPIC,
@@ -527,18 +434,17 @@ static uint8_t MQTT_Subscribe(void)
     return 1U;
 }
 
+
+/* MQTT receive */
+
 static void MQTT_Process(void)
 {
     static char mqtt_buffer[MQTT_RECEIVE_SIZE];
     static uint16_t mqtt_position = 0U;
 
     uint8_t received_byte;
-    float parsed_temperature;
+    float parsed_temperature = 0.0f;
 
-    /*
-     * Накопичуємо всі байти MQTT-повідомлення,
-     * доки не отримаємо +CMQTTRXEND.
-     */
     while (HAL_UART_Receive(
                &huart1,
                &received_byte,
@@ -557,9 +463,6 @@ static void MQTT_Process(void)
         }
         else
         {
-            /*
-             * Захист від переповнення.
-             */
             mqtt_position = 0U;
 
             memset(
@@ -569,56 +472,40 @@ static void MQTT_Process(void)
             );
         }
 
-        /*
-         * Повне MQTT-повідомлення отримане.
-         */
         if (strstr(
                 mqtt_buffer,
                 "+CMQTTRXEND:"
             ) != NULL)
         {
-            parsed_temperature = 0.0f;
-
             if (MQTT_ExtractTemperature(
                     mqtt_buffer,
                     &parsed_temperature
                 ))
             {
-                /*
-                 * Зберігаємо отримане значення.
-                 */
                 g_received_temperature =
                     parsed_temperature;
 
                 g_temperature_valid = 1U;
 
-                /*
-                 * Виводимо температуру на Nokia 5110.
-                 */
                 Nokia5110_ShowTemperature(
                     g_received_temperature
                 );
 
-                /*
-                 * Два повільні спалахи:
-                 * температура отримана,
-                 * збережена і показана.
-                 */
                 LED_Blink(2U, 500U);
             }
             else
             {
-                /*
-                 * Повідомлення прийшло,
-                 * але число не вдалося прочитати.
-                 */
                 Nokia5110_Clear();
 
                 Nokia5110_SetCursor(0U, 1U);
-                Nokia5110_WriteString("Payload error");
+                Nokia5110_WriteString(
+                    "Payload error"
+                );
 
                 Nokia5110_SetCursor(0U, 3U);
-                Nokia5110_WriteString("No temperature");
+                Nokia5110_WriteString(
+                    "No number"
+                );
 
                 LED_Blink(4U, 150U);
             }
@@ -634,9 +521,6 @@ static void MQTT_Process(void)
             break;
         }
 
-        /*
-         * MQTT-з'єднання втрачено.
-         */
         if (strstr(
                 mqtt_buffer,
                 "+CMQTTCONNLOST:"
@@ -648,7 +532,9 @@ static void MQTT_Process(void)
             Nokia5110_WriteString("MQTT lost");
 
             Nokia5110_SetCursor(0U, 3U);
-            Nokia5110_WriteString("Restart board");
+            Nokia5110_WriteString(
+                "Restart board"
+            );
 
             LED_Blink(7U, 150U);
 
@@ -667,20 +553,126 @@ static void MQTT_Process(void)
     HAL_Delay(10U);
 }
 
+
+/* Temperature parsing */
+
+static uint8_t IsDigit(char character)
+{
+    return ((character >= '0') &&
+            (character <= '9'));
+}
+
+
+static uint8_t ParseFloatManual(
+    const char *start,
+    const char *end,
+    float *value
+)
+{
+    const char *position;
+
+    float result = 0.0f;
+    float fraction_multiplier = 0.1f;
+
+    uint8_t negative = 0U;
+    uint8_t found_digit = 0U;
+    uint8_t decimal_found = 0U;
+
+    if ((start == NULL) ||
+        (end == NULL) ||
+        (value == NULL) ||
+        (start >= end))
+    {
+        return 0U;
+    }
+
+    position = start;
+
+    if (*position == '-')
+    {
+        negative = 1U;
+        position++;
+    }
+    else if (*position == '+')
+    {
+        position++;
+    }
+
+    while (position < end)
+    {
+        char character = *position;
+
+        if (IsDigit(character))
+        {
+            uint8_t digit =
+                (uint8_t)(character - '0');
+
+            found_digit = 1U;
+
+            if (!decimal_found)
+            {
+                result =
+                    (result * 10.0f) +
+                    (float)digit;
+            }
+            else
+            {
+                result +=
+                    (float)digit *
+                    fraction_multiplier;
+
+                fraction_multiplier *= 0.1f;
+            }
+        }
+        else if ((character == '.') ||
+                 (character == ','))
+        {
+            if (decimal_found)
+            {
+                break;
+            }
+
+            decimal_found = 1U;
+        }
+        else
+        {
+            break;
+        }
+
+        position++;
+    }
+
+    if (!found_digit)
+    {
+        return 0U;
+    }
+
+    if (negative)
+    {
+        result = -result;
+    }
+
+    if ((result < -100.0f) ||
+        (result > 150.0f))
+    {
+        return 0U;
+    }
+
+    *value = result;
+
+    return 1U;
+}
+
+
 static uint8_t MQTT_ExtractTemperature(
     const char *buffer,
     float *temperature
 )
 {
     const char *payload_marker;
-    const char *payload_start;
-    const char *payload_end;
-
-    char payload[32];
-    size_t payload_length;
-
-    char *conversion_end;
-    float parsed_value;
+    const char *payload_area;
+    const char *rx_end;
+    const char *number_start;
 
     if ((buffer == NULL) ||
         (temperature == NULL))
@@ -688,16 +680,9 @@ static uint8_t MQTT_ExtractTemperature(
         return 0U;
     }
 
-    /*
-     * Очікуваний формат:
-     *
-     * +CMQTTRXPAYLOAD: 0,5
-     * 29.19
-     * +CMQTTRXEND: 0
-     */
     payload_marker = strstr(
         buffer,
-        "+CMQTTRXPAYLOAD:"
+        "+CMQTTRXPAYLOAD"
     );
 
     if (payload_marker == NULL)
@@ -705,104 +690,79 @@ static uint8_t MQTT_ExtractTemperature(
         return 0U;
     }
 
-    /*
-     * Знаходимо кінець заголовка payload.
-     */
-    payload_start = strstr(
+    rx_end = strstr(
         payload_marker,
-        "\r\n"
+        "+CMQTTRXEND"
     );
 
-    if (payload_start == NULL)
+    if (rx_end == NULL)
     {
         return 0U;
     }
 
-    payload_start += 2;
-
-    /*
-     * Пропускаємо зайві переведення рядка,
-     * пробіли та табуляцію.
-     */
-    while ((*payload_start == '\r') ||
-           (*payload_start == '\n') ||
-           (*payload_start == ' ') ||
-           (*payload_start == '\t'))
-    {
-        payload_start++;
-    }
-
-    payload_end = payload_start;
-
-    while ((*payload_end != '\0') &&
-           (*payload_end != '\r') &&
-           (*payload_end != '\n'))
-    {
-        payload_end++;
-    }
-
-    payload_length =
-        (size_t)(payload_end - payload_start);
-
-    if ((payload_length == 0U) ||
-        (payload_length >= sizeof(payload)))
-    {
-        return 0U;
-    }
-
-    memcpy(
-        payload,
-        payload_start,
-        payload_length
+    payload_area = strchr(
+        payload_marker,
+        '\n'
     );
 
-    payload[payload_length] = '\0';
+    if (payload_area != NULL)
+    {
+        payload_area++;
+    }
+    else
+    {
+        payload_area = strchr(
+            payload_marker,
+            ':'
+        );
 
-    conversion_end = NULL;
+        if (payload_area == NULL)
+        {
+            return 0U;
+        }
 
-    /*
-     * Перетворюємо "29.19" у float.
-     */
-    parsed_value = strtof(
-        payload,
-        &conversion_end
+        payload_area++;
+    }
+
+    if (payload_area >= rx_end)
+    {
+        return 0U;
+    }
+
+    number_start = payload_area;
+
+    while (number_start < rx_end)
+    {
+        if (IsDigit(*number_start))
+        {
+            break;
+        }
+
+        if (((*number_start == '-') ||
+             (*number_start == '+')) &&
+            ((number_start + 1) < rx_end) &&
+            IsDigit(*(number_start + 1)))
+        {
+            break;
+        }
+
+        number_start++;
+    }
+
+    if (number_start >= rx_end)
+    {
+        return 0U;
+    }
+
+    return ParseFloatManual(
+        number_start,
+        rx_end,
+        temperature
     );
-
-    /*
-     * Жодної цифри не прочитано.
-     */
-    if (conversion_end == payload)
-    {
-        return 0U;
-    }
-
-    /*
-     * Після числа дозволяємо лише пробіли.
-     */
-    while ((*conversion_end == ' ') ||
-           (*conversion_end == '\t'))
-    {
-        conversion_end++;
-    }
-
-    if (*conversion_end != '\0')
-    {
-        return 0U;
-    }
-
-    /*
-     * Перевірка розумного діапазону.
-     */
-    if ((parsed_value < -100.0f) ||
-        (parsed_value > 150.0f))
-    {
-        return 0U;
-    }
-
-    *temperature = parsed_value;
-
-    return 1U;
 }
+
+
+/* Modem communication */
 
 static uint8_t Modem_SendCommand(
     const char *command,
@@ -839,6 +799,7 @@ static uint8_t Modem_SendCommand(
 
     return strstr(response, expected) != NULL;
 }
+
 
 static uint16_t Modem_Read(
     char *buffer,
@@ -885,6 +846,7 @@ static uint16_t Modem_Read(
     return position;
 }
 
+
 static void UART_Clear(void)
 {
     uint8_t received_byte;
@@ -901,6 +863,9 @@ static void UART_Clear(void)
     __HAL_UART_CLEAR_OREFLAG(&huart1);
 }
 
+
+/* LED */
+
 static void Fatal_Error(uint8_t code)
 {
     while (1)
@@ -909,6 +874,7 @@ static void Fatal_Error(uint8_t code)
         HAL_Delay(1500U);
     }
 }
+
 
 static void LED_Blink(
     uint8_t count,
@@ -929,18 +895,16 @@ static void LED_Blink(
     }
 }
 
+
 static void LED_On(void)
 {
-    /*
-     * Вбудований LED Black Pill на PC13
-     * активний низьким рівнем.
-     */
     HAL_GPIO_WritePin(
         GPIOC,
         GPIO_PIN_13,
         GPIO_PIN_RESET
     );
 }
+
 
 static void LED_Off(void)
 {
@@ -950,6 +914,7 @@ static void LED_Off(void)
         GPIO_PIN_SET
     );
 }
+
 
 static void LED_Init(void)
 {
@@ -974,19 +939,15 @@ static void LED_Init(void)
     );
 }
 
+
+/* Nokia 5110 GPIO */
+
 static void Display_GPIO_Init(void)
 {
     GPIO_InitTypeDef gpio_config = {0};
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
-    /*
-     * Початкові рівні:
-     *
-     * DC  = Low
-     * CS  = High
-     * RST = High
-     */
     HAL_GPIO_WritePin(
         GPIOB,
         GPIO_PIN_0,
@@ -1019,6 +980,9 @@ static void Display_GPIO_Init(void)
         &gpio_config
     );
 }
+
+
+/* System clock */
 
 static void SystemClock_Config(void)
 {
@@ -1082,6 +1046,7 @@ static void SystemClock_Config(void)
         Error_Handler();
     }
 }
+
 
 void Error_Handler(void)
 {

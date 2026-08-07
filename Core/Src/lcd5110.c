@@ -185,18 +185,12 @@ void Nokia5110_Init(void)
     );
 
     HAL_GPIO_WritePin(
-        LCD_DC_PORT,
-        LCD_DC_PIN,
-        GPIO_PIN_RESET
-    );
-
-    HAL_GPIO_WritePin(
         LCD_RST_PORT,
         LCD_RST_PIN,
         GPIO_PIN_RESET
     );
 
-    HAL_Delay(100U);
+    HAL_Delay(10U);
 
     HAL_GPIO_WritePin(
         LCD_RST_PORT,
@@ -204,43 +198,13 @@ void Nokia5110_Init(void)
         GPIO_PIN_SET
     );
 
-    HAL_Delay(100U);
+    HAL_Delay(10U);
 
-    /*
-     * Extended instruction set.
-     */
     Nokia5110_WriteCommand(0x21U);
-
-    /*
-     * Contrast.
-     */
-    Nokia5110_WriteCommand(0xBFU);
-
-    /*
-     * Temperature coefficient.
-     */
+    Nokia5110_WriteCommand(0xBEU);
     Nokia5110_WriteCommand(0x04U);
-
-    /*
-     * Bias system.
-     */
-    Nokia5110_WriteCommand(0x13U);
-
-    /*
-     * Basic instruction set.
-     */
+    Nokia5110_WriteCommand(0x14U);
     Nokia5110_WriteCommand(0x20U);
-
-    /*
-     * All pixels ON for hardware test.
-     */
-    Nokia5110_WriteCommand(0x09U);
-
-    HAL_Delay(1500U);
-
-    /*
-     * Normal display mode.
-     */
     Nokia5110_WriteCommand(0x0CU);
 
     Nokia5110_Clear();
@@ -272,6 +236,8 @@ void Nokia5110_SetCursor(uint8_t x, uint8_t y)
         y = 0U;
     }
 
+    Nokia5110_WriteCommand(0x20U);
+
     Nokia5110_WriteCommand(
         (uint8_t)(0x80U | x)
     );
@@ -293,6 +259,8 @@ void Nokia5110_WriteChar(char character)
 
     font_index =
         (uint8_t)character - 32U;
+
+    Nokia5110_WriteData(0x00U);
 
     for (uint8_t column = 0U;
          column < 5U;
@@ -324,18 +292,73 @@ void Nokia5110_ShowTemperature(float temperature)
 {
     char text[24];
 
+    int whole;
+    int decimal;
+
+    /*
+     * Перетворюємо float у дві цілі частини,
+     * щоб не використовувати %f у snprintf().
+     */
+    if (temperature >= 0.0f)
+    {
+        whole = (int)temperature;
+
+        decimal = (int)(
+            (temperature - (float)whole) *
+            100.0f +
+            0.5f
+        );
+    }
+    else
+    {
+        whole = (int)temperature;
+
+        decimal = (int)(
+            ((float)whole - temperature) *
+            100.0f +
+            0.5f
+        );
+    }
+
+    if (decimal >= 100)
+    {
+        if (temperature >= 0.0f)
+        {
+            whole++;
+        }
+        else
+        {
+            whole--;
+        }
+
+        decimal = 0;
+    }
+
     snprintf(
         text,
         sizeof(text),
-        "%.2f C",
-        (double)temperature
+        "%d.%02d C",
+        whole,
+        decimal
     );
 
     Nokia5110_Clear();
 
-    Nokia5110_SetCursor(6U, 1U);
-    Nokia5110_WriteString("Temperature");
+    Nokia5110_SetCursor(
+        6U,
+        1U
+    );
 
-    Nokia5110_SetCursor(22U, 3U);
-    Nokia5110_WriteString(text);
+    Nokia5110_WriteString(
+        "Temperature"
+    );
+
+    Nokia5110_SetCursor(
+        18U,
+        3U
+    );
+
+    Nokia5110_WriteString(
+        text
+    );
 }
