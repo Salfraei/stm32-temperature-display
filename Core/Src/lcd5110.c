@@ -201,7 +201,7 @@ void Nokia5110_Init(void)
     HAL_Delay(10U);
 
     Nokia5110_WriteCommand(0x21U);
-    Nokia5110_WriteCommand(0xBEU);
+    Nokia5110_WriteCommand(0xA8U);
     Nokia5110_WriteCommand(0x04U);
     Nokia5110_WriteCommand(0x14U);
     Nokia5110_WriteCommand(0x20U);
