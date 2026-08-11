@@ -24,6 +24,8 @@ add_subdirectory(cmake/stm32cubemx)
 
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/lcd5110.c
+    Core/Src/modem.c
+    Core/Src/mqtt_manager.c
 )
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
